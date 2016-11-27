@@ -1,0 +1,5 @@
+Thesis_LATEX/**/*.aux
+Thesis_LATEX/**/*.log
+Thesis_LATEX/**/*.pdf
+Thesis_LATEX/**/*.gz
+Thesis_Latex/**/*.lb

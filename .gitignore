@@ -2,4 +2,11 @@ Thesis_LATEX/**/*.aux
 Thesis_LATEX/**/*.log
 Thesis_LATEX/**/*.pdf
 Thesis_LATEX/**/*.gz
-Thesis_Latex/**/*.lb
+Thesis_LATEX/**/*.lb
+Thesis_LATEX/**/*.bbl
+Thesis_LATEX/**/*.blg
+Thesis_LATEX/**/*.out
+Thesis_LATEX/**/*.pdf
+Thesis_LATEX/**/*.toc
+Thesis_LATEX/**/*.bat
+./**/.DS_Store

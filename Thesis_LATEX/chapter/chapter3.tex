@@ -1,115 +1,89 @@
-\chapter{长时间目标跟踪算法}
-周视监控系统需要具备对感兴趣目标进行长时间跟踪的能力。长时间目标跟踪器需要满足以下两个条件：（1）当目标跟丢后，能够重新进行初始化，矫正跟踪误差；（2）当目标暂时离开视野范围，并再次进入视野时，能够再次跟踪。
-现有的基于在线学习（online-learning）的目标跟踪器都不能胜任长时间跟踪的任务，因为在线学习的方式存在``漂移''（drift）问题，一旦跟丢，很难重新初始化。在跟踪过程中目标的外观和形状可能会随时发生改变，为了适应目标的动态变化，在线学习机制又是必不可少的。因此，为了实现长时间的目标跟踪，离线的先验知识和在线学习机制都是不可或缺的。第\ref{chap:2}章中实现的基于深度学习的目标检测算法经过大量图像数据的训练，能够在给定图像上可靠地检测感兴趣目标，可以作为目标离线的先验知识来完成目标的初始定位以及跟丢后的重定位。现有的在线式跟踪算法（Struck \cite{struck}，KCF \cite{kcf} 等）用来适应目标的动态过程。本文采用一种离线--在线式的方式来实现长时间的目标跟踪，其中离线的基于深度学习的目标检测算法是整个系统得以可靠运行的基石。离线的先验知识于在线学习的过程通过大名鼎鼎P-N learning \cite{p-n} 方法来融合。P-N learning也是广为人知的TLD \cite{tld} 跟踪算法的核心。本文采用Struck算法作为在线的跟踪器。
-\section{Struck跟踪算法}
+\chapter{目标检测算法在NVIDIA TX1上实现}
+为了提高对小尺度目标的检测精度，第\ref{chap:2}章提出了Atrous Faster R-CNN并证明了它对小尺度目标的有效性。Atrous Faster R-CNN使用VGG16作为基础网络，在NVIDIA Titan X GPU上的运行速率为7 \texttt{fps}。Titan X是一款服务器级的GPU计算平台，体积大、功耗高（峰值功耗可达250w），不适用于嵌入式场景。很多应用场景需要将目标检测器运行在嵌入式环境下，例如家庭服务机器人、小型民用无人机等，嵌入式计算平台通常计算资源有限，而且对功耗敏感。本章针对NVIDIA TX1计算平台，对Atrous Faster R-CNN目标检测算法进行裁剪和改进，使其能够实时地运行在嵌入式计算平台上。
 
-\subsection{Tracking-by-detection方法}
-Tracking-by-detection方法之所以如此流行，主要归功于目标检测技术和机器学习技术的快速发展。Tracking-by-detection方法与目标检测方法有着诸多相似之处，近来年目标检测技术的发展突飞猛进，有很多思想和方法可以直接应用到跟踪问题中来。为了应对跟踪对象和背景的外观变化，分类器必须利用分类结果进行在线更新。近年来机器学习技术也有了很大发展，为跟踪过程中分类器在线更新跟踪对象和背景的外观模型打下了基础。
+\section{Atrous Faster R-CNN移植到NVIDIA Jetson TX1}
+本节介绍如何将Atrous Faster R-CNN目标检测算法通过网络裁剪移植到NVIDIA Jetson TX1嵌入式计算平台。
+\subsection{NVIDIA Jetson TX1嵌入式开发平台简介}
+GPU 是图像处理单元(Graphics Process Unit)的缩写，它最先由 NVIDIA 公 司提出，是一种专门用于图像和图形处理的并行处理器。GPU 在图像处理、数据 分析等方面有着得天独厚的优势，近些年来得到了广泛的发展和应用。如今的 GPU 在计算吞吐量及内存带宽上已经远远超过 CPU，特别是对于并行计算以及浮点运 算，GPU 的性能要远远高于 CPU，这使得 GPU 成为当今世界上处理并行数据最有效的处理器。
 
-Tracking-by-detection方法在线训练一个分类器，进而将跟踪对象和背景区分开。跟踪过程中，分类器通过在上一帧目标位置的周围搜索最大的分类分值来确定当前帧中目标的位置。一般用滑动窗口的方法来进行搜索。确定了当前帧中目标的位置后，传统的方法是在目标位置的附近采样得到一些有标签的正、负样本，然后用这些样本对分类器进行在线更新。如上所述，传统的方法将分类器在线更新分成两个独立的部分：（1）采样得到一些有标签的训练样本，（2）更新分类器。
-
-用数学语言来描述上述跟踪过程。跟踪器的任务就是在图像帧${f_t} \in F$中估计一个包含跟踪对象的边界框（bounding box）的位置$p \in P$，$t = 1,\dots,T$表示时间。给定一个边界框的位置$p$，我们就可以从边界框
-$x_t^p \in X$内的图像块提取特征，然后用分类器对特征进行分类。
-经过上述步骤我们就可以得到训练样本集$(x,z)$，其中 $z =  \pm 1$是二元标签，通过$z = sign(h(x))$预测得到，$h:X\rightarrow\textbf{R}$是分类置信函数。然后我们就可以利用这些样本来在线更新分类器。
-
-跟踪过程中，假设当前帧目标的位置可以通过在上一帧目标位置的周围区域最大化$h$来估计。用$p_{t-1}$表示在 时刻估计的边界框位置，跟踪器的任务就是估计一个变换（例如平移）$y_t \in Y$，使得$t$时刻目标的位置为$p_t=p_{t-1}\comp y_t$。$Y$表示搜索空间，它的形式取决于我们要跟踪什么样的运动。在大多数的tracking-by-detection方法中，我们将相邻两帧之间目标对象的运动建模为2D平移运动，即$Y = \left\{ {(u,v)|{u^2} + {v^2} < {r^2}} \right\}$ ，$r$表示搜索半径。$t$时刻相邻两帧之间目标位置的相对变化通过
-\begin{equation}
-{y_t} = \arg \mathop {\max }\limits_{y \in {Y_t}} h(x_t^{{p_{t - 1}} \comp y})
-\end{equation}
-来估计，然后跟踪器就可以认为$t$时刻跟踪目标的位置为${p_t} = {p_{t - 1}} \comp {y_t}$。
-
-估计完$t$时刻跟踪目标的位置之后，我们就可以从当前帧获得一组训练样本。我们可以将这一过程分为两个部分：采样和标注。在当前帧估计结果的周围采集$n$个样本
-$\left\{ {x_t^{{p_t} \comp y_t^1},\dots,x_t^{{p_t} \comp y_t^n}} \right\}$ 。然后通过某种方法，将这 个样本分别贴上二元标签
-$\left\{ {z_t^1,\dots,z_t^n} \right\}$，生成训练样本
-$\left\{ {x_t^i,z_t^i} \right\}_{i = 1}^n$。最后，分类器利用这些训练样本进行更新。
-
-下面来详细介绍一下传统的tracking-by-detection方法是如何进行标注工作的。之所以这么做，一方面是为了更加详尽地阐述tracking-by-detection方法的工作原理，另一方面也是为了与Struck跟踪算法进行对比。传统的方法使用相似性度量函数来确定位于${p_t} \comp y_t^i$的样本的标签。给定当前帧跟踪目标的位置$p_t$，相似性度量函数$s(y_t^i,y_t^j;p_t)\in\textbf{R}$确定样本$x_t^{{p_t} \comp y_t^i}$和$x_t^{{p_t} \circ y_t^j}$之间的相似度。我们定义重叠度函数
-\begin{equation}
-s(y_t^i,y_t^j;{p_t}) = \frac{{({p_t} \circ y_t^i) \cap ({p_t} \circ y_t^j)}}{{({p_t} \circ y_t^i) \cup ({p_t} \circ y_t^j)}}
-\end{equation}
-来度量两个边界框之间的重叠度。另外一种常用的相似度度量方式是两个边界框中心之间的距离，即 
-\begin{equation}
-s({y}_t^i,y_t^j;p_t) =  -d(y_t^i,y_t^j)
-\end{equation}我们将$y^0$定义为单位变换，即$p=p \comp y^0$，则样本$x_t^{p_t \comp y_t^i}$的标签由标注函数$l(s(y_t^i,y_t^0;{p_t}))$来确定，
-\begin{equation}
-l(s(y_t^i,y_t^0;{p_t})) = \left\{ \begin{array}{l}
-
-+1 \quad {\rm{for}}\quad s(y_t^i,y_t^0;{p_t}) > {\theta _u}\\
-
--1 \quad {\rm{for}} \quad s(y_t^i,y_t^0;{p_t}) < {\theta _l}\\
-
-{\rm{\ \ }}0 \quad {\rm{ otherwise}}
-
-\end{array} \right.
-\end{equation}
-式中$\theta_u$和$\theta_l$分别是标注器的上、下阈值。
-
-\subsection{Tracking-by-detection方法存在的问题}
-虽然被广泛研究和使用，tracking-by-detection方法仍然有些问题尚未得到很好的解决。首先，二元分类器的目标是将样本正确地分类，而跟踪器的目的是精确地估计跟踪目标的位置，二者并不是严格一致的。正如S. Hare等 \cite{struck}所指出的，最大的分类置信度并不一定对应最优的目标位置估计。其次，到目前为止我们还不知道该以何种方式进行采样和标注。常用的方法是根据样本到目标位置的距离来决定它是正样本还是负样本。显然，这种方法不可避免地会引入一些样本噪声。因此，最近几年提出了一些算法专门研究如何提高分类器对样本噪声的鲁棒性，其中包括半监督学习 \cite{boost-track} \cite{multi-view}，多实例学习 \cite{mil} \cite{mib}等。
-传统的tracking-by-detection方法，需要启发式地从当前帧目标位置的周围采集正、负样本，来进行分类器的更新。虽然上文中提到的半监督学习和多实例学习等方法能够增加分类器对样本噪声的鲁棒性，但是都没有从根本上解决问题。真正的问题是：我们将采样和分类器的训练看成是两个级联的、相互独立的过程。采样和分类器的训练应该是相互影响、同时进行的。为了避免启发式的采样过程（需要对目标位置的估计很精确），人们提出了两种解决方案。一种是基于结构化支持向量机（Structural SVM）\cite{struck}，另一种是是基于Ranking SVM \cite{rank-svm}。这两种方法的核心思想都是将样本之间的结构约束（例如相对排序和区域重叠度）集成到大间隔优化问题中去。支持向量机（SVM）具有泛化能力强、对样本噪声不敏感等优点，而且核函数的使用使输入向量表达的特征更加丰富。结构化输出支持向量机是二元支持向量机的一种泛化形式，能够处理例如图、树等复杂的输出结构。合理地利用输出空间中不同输出之间的关系，我们能够从训练样本中得到更多的信息。因此，本文采用基于结构化输出支持向量机（structural output support vector machine）的方法来进行跟踪。在本文中，输出空间中的元素是由4个坐标（上、下、左、右）确定的边界框。
-
-\subsection{Struck跟踪算法}
-与传统的tracking-by-detection方法不同的是，基于Structural SVM的跟踪算法将跟踪问题看作一个结构化预测问题：预测包含跟踪目标的边界框，而不是一个二元分类问题。在下文中，我们将会看到如何在结构学习的框架中表述视频目标跟踪问题。
-
-\subsubsection{结构化输出支持向量机}
-结构化预测的目的就是，对于一个给定的输入$x \in X$，预测对应的结构化输出$y \in Y$。给定一组输入图像$\left\{x_1,\dots,x_n\right\} \subset X$和它们对应的标签$\left\{y_1,\dots,y_n\right\} \subset Y$，希望能够学习一个映射$g:X \rightarrow Y$用于完成结构化预测。这里$Y=\left\{(t,l,b,r)|(t,l,b,r) \in \textbf{R}^4\right\}$，$(t,l,b,r)$用于表示边界框的4个坐标，在结构学习的框架下学习映射$g$
-\begin{equation}
-g(x)=\arg \max_{y \in Y}{f(x,y)}
-\end{equation}
-$f(x,y)$是一个判别函数，样本$(x,y)$中输入$x$和输出$y$越是匹配，函数$f$的值就越大。因此结构学习的任务就是学习判别函数$f$。
-
-为了学习判别函数$f$，Struck使用下述泛化的支持向量机
-\begin{equation}
-\begin{aligned}
-& \min_{\omega,\zeta} &&\frac{1}{2}\|\omega\|^2 + C\sum_{i=1}^{n}\zeta_i\\
-& s.t.&&\langle \omega,\phi(x_i,y_i)\rangle-\langle\omega,\phi(x_i,y)\rangle \geq \Delta(y_i,y)-\zeta_i,\quad \forall i,\forall y\in Y\\
-\end{aligned}
-\end{equation}
-式中$f(x_i,y)=\langle\omega,\phi(x_i,y)\rangle$，$\phi(x_i,y)$是一个联合映射核，根据核函数的性质可知下式成立
-\begin{equation}
-k((x,y),(x',y'))=\langle\phi(x,y),\phi(x',y')\rangle
-\end{equation}
-这一优化问题的约束条件保证$f(x_i,y_i)$比任意$f(x_i,y)$至少大$\Delta(y_i,y)$，与二元支持向量机类似，这也是大间隔分类思想的体现。正是这种大间隔分类的作用，判别函数$f$具有很强的判别能力。损失函数应该满足当且仅当$y=y_i$时$\Delta(y_i,y)=0$，而且当$y_i$变得和$y$越来越相似时，$\Delta(y_i,y)$趋近于0。损失函数在本文提出的算法中至关重要，它可以解决上文中提到的tracking-by-detection方法将所有训练样本同等对待的问题。
-
-\subsubsection{损失函数的选取}
-Struck中损失函数$\Delta(y_i,y)$定义为
-\begin{equation}
-\Delta(y_i,y)=1-{\rm{IoU}}(y_i,y)
-\end{equation}
-该函数满足：（1）当且仅当$y$和$y_i$相同时，损失函数$\Delta(y_i,y)=0$；（2）当$y$和$y_i$不重叠时，损失函数$\Delta(y_i,y)=1$。
-
-\section{P-N learning}
-PN learning, P指代Positive Constraint,也称之为P-expert或者growing event,N指代Negative Constraint,也称之为N-expert或者pruning event。
-P-expert的作用是发现目标的新的外观（形变），并以此来增加正样本的数量，从而使得检测模块更具鲁棒性；
-N-expert的作用是生成负的训练样本。N-expert的前提假设是，（被跟踪的）前景目标仅可能出现在视频帧中的一个位置，因此，如果前景目标的位置是确定的，那么其周围必然是负样例。 PN学习包含四个部分：（1）一个待学习的分类器；（2）训练样本集--一些已知类别标签的样本；（3）监督学习--一种从训练样本集中训练分类器的方法；（4）P-N experts--在学习过程中用于产生正（训练）样本和负（训练）样本的表达函数；这四个部分之间的关系如图 \ref{fig:pn-learning}所示。
+Jetson TX1是英伟达公司于2015年9月推出的一款嵌入式CPU+GPU异构计算平台。它是一款专门为开发人员设计的高性能、低功耗的 GPU 嵌入式开发套件， 可用于开发机器人、汽车自动驾驶、无人机等应用和系统。Jetson TX1 平台上包含一颗拥有256个 CUDA 核心的 Terga X1 移动处理器， 该处理器采用和超级计算机完全相同的Maxwell架构，可提供高达1T-Flops的强大计算性能并完整支持NVIDIA CUDA技术。同时该处理器上集成了一颗四核 ARM A57 CPU，支持4K视频编解码以及14亿像素/秒相机拍摄。
+SoC模块尺寸50*87mm（信用卡大小），开发板尺寸170mm*170mm，还集成了4GB LPDDR4内存、16GB eMMC存储空间，运行Linux for Tegra系统。同时该平台拥有麦克风输入、USB 3.0、HDMI 1.4、千兆以太网口、SD/MMC、SATA、miniPCIe、RS232 串行端口、Micro
+USB 等丰富的 I/O 端口。图 \ref{fig:tx1} 展示了 Jetson TX1 开发平台的硬件架构。
 \begin{figure}[h]
 	\centering
-	\includegraphics[width=\textwidth]{pn-learning}
-	\caption{P-N learning示意图。}
-	\label{fig:pn-learning}
+	\includegraphics[width=0.5\textwidth]{tx1}
+	\caption{Jetson TX1 硬件架构图}
+	\label{fig:tx1}
 \end{figure}
-从理论上分析得出，只要P-expert和N-expert预测的准确率超过50\%就能够提高分类器的性能，因此本文中的P-expert和N-expert选用基于深度学习的目标检测算法，经过实验证明该算法预测的正确率远远超过50\%，能够纠正在线学习所导致的漂移的问题。
 
-\section{实验结果及分析}
-在线学习算法及P-N learning融合过程运行在Intel I7处理器上，基于深度学习的目标检测算法运行在Nvidia Titan X上，二者之间通过Tcp/IP协议交换数据，由于基于深度学习的目标检测对一幅图像需要230ms，因此P-N learning融合的过程隔几桢做一次，但实验证明这对跟踪效果没有明显影响。典型的图像序列跟踪效果如图 \ref{fig:track-result} 所示。
-\begin{figure}
-	\subfigure[David]{
-		\includegraphics[width=8cm, height=4cm]{david}
-	}
-	\subfigure[Sylvester] {
-		\includegraphics[width=8cm, height=4cm]{syl}
-	}
-	\subfigure[Woman] {
-		\includegraphics[width=8cm, height=4cm]{woman}
-	}
-	\subfigure[Car] {
-		\includegraphics[width=8cm, height=4cm]{car}
-	}
-	\subfigure[Girl] {
-		\includegraphics[width=8cm, height=4cm]{girl}
-	}
-	\subfigure[Faceocc] {
-		\includegraphics[width=8cm, height=4cm]{faceocc}
-	}
-	\caption{在典型图像序列上的跟踪效果}
+\subsection{Darknet}
+VGG16网络包含13个卷积层，3个全连接层以及5个池化层（不含参数），共计约132M个参数，占用存储空间528MB，对于$224\times224$大小的输入图像执行约30.94 Billion次运算。若Atrous Faster R-CNN选用VGG16作为基础网络显然不能在Jetson TX1上实时运行，而且功耗很高，因为需要很多次的内存读操作，而内存读写操作比ALU计算单元的功耗要大得多，约为100:1。因此，我们必须使用比较小的模型来减少模型参数和计算量，并保证目标检测精度不会出现显著降低。本文采用了DarkNet这种网络结构，它可以看作精简版的VGG16网络，与VGG16、AlexNet的对比见表 \ref{tab:nets}。
+\begin{table}
+	\caption{AlexNet、VGG16、Darknet在ImageNet 2012图像分类上的表现以及网络规模对比，表中``Bn''表示``BIllion''，``MB''表示``Mega Bytes''。}
+	\centering
+	\begin{tabular}{ccccc}
+		\toprule
+		模型 & Top-1 & Top-5 & 计算次数 & 存储\\
+		\midrule
+		AlexNet & 57.0 & 80.3 & 2.27 Bn & 285 MB\\
+		VGG16 & 70.5 & 90.0 & 30.94 Bn & 528 MB\\
+		Darknet & 61.1 & 83.0 & 0.81 Bn & 28 MB\\
+		\bottomrule		
+	\end{tabular}	
+	\label{tab:nets}
+\end{table}
+
+从表 \ref{tab:nets}可以看出Darknet在精度与网络规模之间作出了很好的权衡，Darknet的网络结构如图 \ref{fig:darknet}所示，下文将Darknet的卷积层依次称为\texttt{conv1}，\texttt{conv2}，$\cdots$，\texttt{conv8}，特征图的维度分别为16，32，64，128，256，512，1024，1000，MAX池化层依次称为\texttt{pool1}，\texttt{pool2}，$\cdots$，\texttt{pool6}。Darknet是一个全卷积神经网络，而且使用了Batch Normalization \cite{batch-norm}来加速训练过程。为了使用Darknet作为Atrous Faster R-CNN的基础网络，我们需要将Darknet分为两部分：卷积网络与RoI网络。为此我们对Darknet进行如何变换：
+\begin{namelist}{}
+	\item
+	（1）将\texttt{pool5} MAX池化层换成网格大小为$7\times7$的RoI池化层；
+	\item
+	（2）用两个同级的卷积层替换\texttt{conv8}，这两个卷积层分别用来做分类和边框回归，卷积核大小分别为$3\times3\times21$，$3\times3\times84$，并且在这两个卷积层后分别加一个Average池化层。
+	\item
+	（3）在\texttt{conv5}后接第\ref{chap:2}章中提出的Atrous Region Proposal Network，并将位置编码的维度由512变成256以减少计算量。
+\end{namelist}
+除了对网络结构进行上述变换，其他因素例如损失函数选取、样本采样方式等均保持不变。精简版的Atrous Faster R-CNN在Jetson TX1上运行速率为15 \texttt{fps}，在PASCAL VOC 2007测试集上的检测精度为57.1\%（mAP）。
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=\textwidth]{darknet}
+	\caption{Darknet网络，图中红色表示MAX池化层，黑色表示卷积层，所有卷积核的空间大小都是$3\times3$，图中省略了每个卷积层后的BatchNorm层。}
+	\label{fig:darknet}
 \end{figure}
+
+\section{提升检测精度}
+在上一节中我们将Atrous Faster R-CNN网络进行裁剪并移植到了Jetson TX1嵌入式平台，并且能够获得15 \texttt{fps}的运行速率，但是检测器的准确度明显下降了（从76.9\%下降到57.1\%）。这一小节中运用两个小技巧在不增加任何计算量的前提下提升精简版Atrous Faster R-CNN的检测精度。
+
+\subsection{多层特征融合}
+第\ref{chap:2}章中提出的Atrous Region Proposal Network（ARPN）通过具有不同感知野的分支去预测不同尺度的候选区域，并且实验证明该方法的性能优于Region Proposal Network。ARPN中不同的分支共享\texttt{conv5\_3}卷积特征图，但\texttt{conv5\_3}卷积特征图属于高层的特征空间，很难保留物体的细节特征。这对小物体的检测以及遮挡物体的定位都会带来不利的影响。图像语义分割中常常使用特征融合的方法，即把浅层的特征与高层的特征经过尺度变换后拼在一起。拼接的方式基本有两种，一种是像GoogLeNet \cite{inception-v4}一样，按channel维度拼起来，第二种像ResNet \cite{resnet}那样，把它们直接相加。现在这种做法也变成了趋势，越来越多人做视觉任务都用了类似的方法。经过多层卷积，下采样后得到低分辩的高维表达，可以抽象出物体的高层语意表达，捕获物体的上下文空间信息，相当于是一个bottom-up的表达抽象过程。然后再逐步把前面的特征组合起来，补充细节信息，这相当于再做一个top-down的修正。
+
+将低分辩率的高层特征经过尺度放大与高分辨率的浅层特征融合会增大滑动特征图的分辨率，进而增大运算量，而且需要归一化各层特征的激活值，通常需要精心设置学习率。因此本文采用了一种``late fusion''的方案来提取多尺度的候选区域：直接在不同层的特征上预测不同大小的候选区域，然后将所有这些候选窗口放在一起做非极大值移植（NMS），然后选取前$N$个候选窗口。具体来说，我们仍然使用VGG16作为基础网络，使用 \texttt{conv4\_3}的特征预测尺度为64，128的anchors的边框回归以及前景概率，使用 \texttt{conv5\_3}的特征预测尺度为256，512的anchors。正如ParseNet \cite{parsenet}中所指出的那样，\texttt{conv4\_3}的特征值要比比\texttt{conv5\_3}的特征值大很多，这通常会导致网络难以训练，因此本文采用L2 Normalization的方法对\texttt{conv4\_3}的特征值进行归一化处理。对于一个给定的$d$维特征向量$\rm{x}=(x_1\dots x_d)$，L2 Normalization对它进行如下操作：
+\begin{equation}
+\begin{aligned}
+\hat{\rm{x}} &= \frac{\rm{x}}{||\rm{x}||_2} \\
+y_i &= \gamma_i \hat{x}_i
+\end{aligned}
+\end{equation}
+其中$||\rm{x}||_2$表示特征向量$\rm{x}$的L2范数，$\gamma_1,\dots, \gamma_d$表示可学习的缩放系数，初始值均设置为20，也就是说\texttt{conv4\_3}特征经过归一化后的L2范数初始化为20，网络结构如图\ref{fig:arpn-v2}所示。
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=\textwidth]{arpn-v2}
+	\caption{ARPN V2网络结构示意图}
+	\label{fig:arpn-v2}
+\end{figure}
+
+在ARPN的训练过程中，与ground-truth边界框交并比（IoU）超过0.7或者对某一ground truth边界框而言与它拥有最大交并比的anchor被选为前景区域（图\ref{fig:fg-bg}中红色区域），与所有ground truth的交并比都小于0.3的anchor被选为背景区域（图\ref{fig:fg-bg}中黑色区域），其他的anchor（图\ref{fig:fg-bg}中灰色区域）不参与训练。训练时对前景区域和背景区域同时做分类，但只对前景区域做边界框回归。但是，ARPN测试阶段可能会将位于灰色区域的anchor分类为前景，由于训练过程中没有学习到如何对这类区域进行边界框回归，此时得到的候选框的位置便有可能是不准确的。因此我们对灰色区域的样本也进行边界框回归，这么做的目的是希望ARPN即使把灰色区域当成正样本，那么此时得到的边界框位置也是准确的。实验证明这个小技巧能够提高生成的候选区域的质量。
+\begin{figure}[h]
+	\centering
+	\includegraphics[scale=1]{fg-bg}
+	\caption{前景背景示意图，红色表示前景区域，黑色表示背景区域。}
+	\label{fig:fg-bg}
+\end{figure}
+经过多层特征融合以及中间区域边界框回归，精简版Atrous Faster R-CNN的检测精度有所提升（从57.1\%提升到59.3\%）。
+\section{难分样本挖掘}
+Atrous Faster R-CNN对每幅图像提取大约2000个候选区域（RoIs）用于训练。这大约2000个候选区域中前景和背景（不包含任意感兴趣的目标）的分布高度不均衡，绝大部分的候选窗口都是背景，极端情况下背景候选区域和前景候选区域的比例能够达到$100:1$。Atrous Faster R-CNN采用与Fast R-CNN相同的策略来处理这种样本不均衡问题，即在每个minibatch中对背景候选区域随机采样使得正负候选区域的比例能够达到$1:3$。这种简单的处理策略在一定程度上缓解了样本不均衡问题，但是也引入了一些需要手工调节与试凑的参数，与此同时在线难分样本挖掘（online hard example mining）的方法最近被证实对样本不均衡问题很有效 \cite{ohem} \cite{densebox}。
+
+挖掘难分样本的技术即bootstrapping，先构造一个初始训练集，完成迭代训练后固定模型寻找错分样本，然后利用这些错分样本重新构造训练集迭代训练更新模型并寻找错分样本，如此循环往复。其实以前大家在用boosting，DPM等方法的时候已经这么做了，Felzenszwalb证实在DPM中通过bootstrapping SVM可以在整个数据集上找到最优的分类策略。Fast R-CNN以及它的变体之所以没有使用bootstrapping策略，主要的困难在于：boostrapping的两个阶段是，使用固定模型寻找错分样本，使用错分样本训练新的模型。训练深度卷积检测器时需要数以万计次的SGD迭代，如果在某个阶段固定模型参数会拖慢训练过程。
+
+为了不拖慢深度CNN网络的训练过程，Shrivastava等 \cite{ohem}提出了在线难分样本挖掘（online hard example mining, OHEM）技术。OHEM对SGD过程进行了一些调整，训练样本不使用固定的分布采样，而是根据每个样本当前的损失值来决定要不要把它加入训练集。在Fast R-CNN中使用OHEM的详细过程如下：在第$t$次SGD迭代过程中，首先进行卷积网络的计算得到卷积特征图，之后RoI网络使用这个卷积特征图以及所有的RoIs进行前向传播，获得每个RoI的损失值，并根据损失值对所有的RoIs进行排序，选择前$B$个损失值最高的RoIs进行反向传播计算梯度。
+
+实验过程中，我们使用所有经过非极大值抑制（阈值设置为0.7）后的proposal进行前向计算，然后选择损失值最高的前128个进行反向传播计算梯度。采用难分样本挖掘将目标检测算法的检测精度提升了1.7\%。本章将第 \ref{chap:2} 中提出的目标检测算法移植到嵌入式的Jetson TX1开发平台上，为此对网络结构进行了精简以适应嵌入式设备的存储和计算资源，并采用了两个工程上的trick进一步提升了在嵌入式平台上目标检测的精度。
